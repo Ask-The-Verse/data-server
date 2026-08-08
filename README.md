@@ -1,34 +1,34 @@
-# Ask The Verse data server
+# Ask The Verse Data Server
 
-This repository builds versioned local datasets for Ask The Verse from two
-Star Citizen data sources:
+[![Data Server CI](https://github.com/Ask-The-Verse/data-server/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Ask-The-Verse/data-server/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/Ask-The-Verse/data-server/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/Ask-The-Verse/data-server/actions/workflows/codeql.yml)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
+
+FastAPI and SQLite game data service for Ask The Verse.
+
+The service builds versioned local datasets from two Star Citizen data
+sources:
 
 - [Erkul](https://erkul.games): ships, ground vehicles, loadouts, and component
   families.
 - [SCMDB](https://scmdb.net): missions, crafting, mining, equipment, and
   related shared data pools.
 
-The repository includes the crawler/SQLite builder and a FastAPI service that
-warms both sources before exposing the current complete dataset.
+At startup, the service checks both upstream sources in parallel, reuses
+complete local data when possible, and exposes only a version completed by
+both workflows.
 
-## What it does
+## Features
 
-Each workflow:
-
-1. Checks the source's current game version.
-2. Skips the source if that version is already marked complete.
-3. Downloads the required source files to a versioned local directory.
-4. Parses the source data into type-specific SQLite tables.
-5. Records run status, file hashes, source URLs, and record counts.
-
-Equivalent Erkul and SCMDB version strings are normalized to one directory, so
-both sources contribute to the same database:
-
-```text
-data/<normalized-version>/game_data.sqlite3
-```
-
-The generated `data/` directory is intentionally ignored by Git.
+- Parallel Erkul `LIVE` and SCMDB `live` startup workflows
+- One SQLite database per normalized game version
+- Exact, substring, and fuzzy ship-name matching
+- Lazy ship-detail downloads with SHA-256 validation
+- Per-ship single-flight locking to prevent duplicate downloads
+- Writer-priority database locking and per-thread SQLite connections
+- Manufacturer reference expansion
+- Strictly trimmed API responses for agent/tool consumption
+- Offline tests with all network access mocked
 
 ## Quick start
 
@@ -36,7 +36,6 @@ Requirements:
 
 - Python 3.9 or newer
 - Internet access to `cdn.erkul.games` and `scmdb.net`
-- `fastapi` and `uvicorn` for the HTTP service
 
 Install the service and development dependencies from the repository root:
 
@@ -45,51 +44,130 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -e '.[dev]'
 ```
 
-Run either crawler directly:
-
-```bash
-python3 workflows/erkul_workflow.py
-python3 workflows/scmdb_workflow.py
-```
-
-Force a refresh of one source without replacing the other source's tables:
-
-```bash
-python3 workflows/erkul_workflow.py --force
-python3 workflows/scmdb_workflow.py --force
-```
-
-Other useful options:
-
-```bash
-python3 workflows/erkul_workflow.py --branch PTU
-python3 workflows/scmdb_workflow.py --channel ptu
-python3 workflows/erkul_workflow.py --output-root /tmp/game-data
-```
-
-## HTTP server
-
 Start one FastAPI process with one Uvicorn worker:
 
 ```bash
-.venv/bin/uvicorn data_server.main:app --workers 1
+.venv/bin/uvicorn data_server.main:app --host 127.0.0.1 --port 8000 --workers 1
 ```
 
-`DATA_ROOT` can override the default `data/` directory, and `LOG_LEVEL` can
-override the default `INFO` logging level.
+The server completes startup synchronization before accepting requests.
+Open the generated API documentation at:
 
-The server checks and warms Erkul `LIVE` and SCMDB `live` in parallel before
-accepting requests. Available endpoints are:
+```text
+http://127.0.0.1:8000/docs
+```
+
+Verify the service:
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+```json
+{
+  "status": "ok",
+  "current_version": "4.9.0-live.12344265"
+}
+```
+
+## Configuration
+
+| Environment variable | Default | Description |
+|---|---|---|
+| `DATA_ROOT` | `<repository>/data` | Versioned downloads and SQLite databases |
+| `LOG_LEVEL` | `INFO` | Python logging level |
+
+This demo service intentionally has no authentication or authorization. It
+supports only the Star Citizen live channel and must run as one FastAPI process
+with one Uvicorn worker.
+
+## API
+
+### Health
 
 ```text
 GET /health
+```
+
+### Versions
+
+```text
 GET /api/v1/versions
+```
+
+Returns versions for which both Erkul and SCMDB have a completed crawl.
+
+### Ship details
+
+```text
 GET /api/v1/ships?name=Hammerhead
 ```
 
 Ship searches use exact, unique substring, then fuzzy suggestion matching.
 Details not already present in `erkul_ships` are downloaded and cached with a
 per-ship single-flight lock.
+
+Successful, ambiguous, and not-found searches all return HTTP `200` with a
+machine-readable `status`:
+
+```json
+{
+  "status": "found",
+  "message": "Ship found with the name: Aegis Hammerhead.",
+  "possible_matches": [],
+  "ship": {
+    "i18n": {},
+    "manufacturer": {},
+    "precomputed": {},
+    "subType": "Vehicle_Spaceship",
+    "tags": [],
+    "vehicle": {}
+  }
+}
+```
+
+Invalid query parameters return HTTP `400`, upstream detail failures return
+HTTP `502`, and SQLite failures return HTTP `500`. Error responses use the
+same outer structure with `status: "error"`.
+
+## Manual workflows
+
+Run either source workflow independently:
+
+```bash
+.venv/bin/python workflows/erkul_workflow.py
+.venv/bin/python workflows/scmdb_workflow.py
+```
+
+Force a source refresh without replacing the other source's tables:
+
+```bash
+.venv/bin/python workflows/erkul_workflow.py --force
+.venv/bin/python workflows/scmdb_workflow.py --force
+```
+
+Useful workflow options:
+
+```bash
+.venv/bin/python workflows/erkul_workflow.py --output-root /tmp/game-data
+.venv/bin/python workflows/scmdb_workflow.py --output-root /tmp/game-data
+```
+
+The HTTP service always uses Erkul `LIVE` and SCMDB `live`; alternate workflow
+channels are intended only for manual data investigation.
+
+## Runtime model
+
+- Startup runs both source workflows concurrently and fails if either workflow
+  fails.
+- A version becomes available only when both `erkul` and `scmdb` are marked
+  `complete` in the same database.
+- If the latest source versions differ, startup falls back to the newest
+  complete common version.
+- Every request and workflow thread owns its SQLite connection.
+- A writer-priority read/write lock prevents writer starvation.
+- Per-reference locks serialize lazy loading for the same ship while allowing
+  different ships to download concurrently.
 
 ## Output layout
 
@@ -200,18 +278,26 @@ Keep source-specific parsing out of this module.
 - Prefer the Python standard library unless a dependency solves a demonstrated
   problem.
 
-## Verification
+## Quality checks
 
-Compile all workflow modules:
+Run the same checks used by CI:
 
 ```bash
-python3 -m py_compile \
-  workflows/game_data_common.py \
-  workflows/erkul_workflow.py \
-  workflows/scmdb_workflow.py
+.venv/bin/ruff check data_server workflows tests
+.venv/bin/ruff format --check data_server workflows tests
+.venv/bin/python -m compileall -q data_server workflows tests
+.venv/bin/python -m pytest \
+  --cov=data_server \
+  --cov=workflows \
+  --cov-report=term-missing
+.github/scripts/check-repository-hygiene.sh
 ```
 
-Check a generated database:
+All tests are offline and mock external network requests. GitHub Actions also
+runs dependency auditing and CodeQL analysis. The protected `main` branch
+requires every CI job and CodeQL to pass.
+
+To inspect a generated database:
 
 ```bash
 sqlite3 data/<version>/game_data.sqlite3 "PRAGMA integrity_check;"
@@ -226,8 +312,17 @@ rows, then run it normally and confirm that the completed version is skipped.
 
 - The complete Erkul lightweight catalogue is stored, including detail blob
   paths for every ship and ground vehicle.
-- Only Hammerhead's full Erkul ship blob is downloaded and expanded.
+- The startup workflow seeds Hammerhead's full Erkul blob; other matched ships
+  are downloaded and cached lazily through the API.
 - SCMDB required files and available optional overlays are stored.
 - Workflows can run manually and are also executed during FastAPI startup.
 - The HTTP API exposes health, complete versions, and current-version ship
   search/detail responses.
+
+## Related repositories
+
+- [Backend](https://github.com/Ask-The-Verse/backend): Go backend and agent
+  runtime
+- [Frontend](https://github.com/Ask-The-Verse/frontend): Next.js application
+- [Website](https://github.com/Ask-The-Verse/github.AskTheVerse.com): public
+  GitHub Pages site
