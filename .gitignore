@@ -7,6 +7,7 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.egg-info/
 .venv/
 venv/
 env/
@@ -18,6 +19,7 @@ env/
 
 # Test, coverage, and tool caches
 .coverage
+coverage.xml
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/

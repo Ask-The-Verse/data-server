@@ -8,30 +8,48 @@ import json
 import sqlite3
 import sys
 import urllib.error
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Optional
-
 
 CRAWLER_ROOT = Path(__file__).resolve().parents[1]
 if str(CRAWLER_ROOT) not in sys.path:
     sys.path.insert(0, str(CRAWLER_ROOT))
 
-from game_data_common import (  # noqa: E402
-    atomic_write,
-    begin_source_run,
-    canonical_json,
-    collection_records,
-    complete_source_run,
-    connect_database,
-    display_name,
-    drop_tables,
-    fail_source_run,
-    http_get,
-    record_source_file,
-    safe_identifier,
-    source_is_complete,
-    version_paths,
-)
+try:
+    from .game_data_common import (
+        atomic_write,
+        begin_source_run,
+        canonical_json,
+        collection_records,
+        complete_source_run,
+        connect_database,
+        display_name,
+        drop_tables,
+        fail_source_run,
+        http_get,
+        record_source_file,
+        safe_identifier,
+        source_is_complete,
+        version_paths,
+    )
+except ImportError:
+    from game_data_common import (  # type: ignore[no-redef]
+        atomic_write,
+        begin_source_run,
+        canonical_json,
+        collection_records,
+        complete_source_run,
+        connect_database,
+        display_name,
+        drop_tables,
+        fail_source_run,
+        http_get,
+        record_source_file,
+        safe_identifier,
+        source_is_complete,
+        version_paths,
+    )
 
 
 BASE_URL = "https://scmdb.net/data"
@@ -74,16 +92,35 @@ def extract_type(value: Any) -> Optional[str]:
 
 
 class ScmdbWorkflow:
-    def __init__(self, channel: str, output_root: Path, force: bool, timeout: int):
+    def __init__(
+        self,
+        channel: str,
+        output_root: Path,
+        force: bool,
+        timeout: int,
+        database_lock: Optional[Any] = None,
+    ):
         self.channel = channel.lower()
         self.output_root = output_root
         self.force = force
         self.timeout = timeout
+        self.database_lock = database_lock
         self.file_count = 0
         self.record_count = 0
+        self.source_version: Optional[str] = None
         self.version_directory: Optional[Path] = None
         self.raw_directory: Optional[Path] = None
         self.connection: Optional[sqlite3.Connection] = None
+
+    def read_guard(self) -> Any:
+        if self.database_lock is None:
+            return nullcontext()
+        return self.database_lock.read_lock()
+
+    def write_guard(self) -> Any:
+        if self.database_lock is None:
+            return nullcontext()
+        return self.database_lock.write_lock()
 
     @staticmethod
     def source_url(filename: str, cache_bust: bool = False) -> str:
@@ -102,23 +139,23 @@ class ScmdbWorkflow:
         content = http_get(url, timeout=self.timeout)
         return url, content, parse_json(content, filename)
 
-    def save_download(
-        self, filename: str, url: str, content: bytes
-    ) -> None:
+    def save_download(self, filename: str, url: str, content: bytes) -> None:
         assert self.raw_directory is not None
         assert self.version_directory is not None
         assert self.connection is not None
 
         destination = self.raw_directory / filename
         atomic_write(destination, content)
-        record_source_file(
-            self.connection,
-            SOURCE,
-            self.version_directory,
-            destination,
-            url,
-            content,
-        )
+        with self.write_guard():
+            record_source_file(
+                self.connection,
+                SOURCE,
+                self.version_directory,
+                destination,
+                url,
+                content,
+            )
+            self.connection.commit()
         self.file_count += 1
         print(f"downloaded {url} -> {destination}")
 
@@ -141,13 +178,17 @@ class ScmdbWorkflow:
             raise RuntimeError(f"No SCMDB {self.channel} version is available")
 
         source_version = str(version_entry["version"])
+        self.source_version = source_version
         version_directory, db_path = version_paths(self.output_root, source_version)
-        connection = connect_database(db_path)
+        with self.write_guard():
+            connection = connect_database(db_path)
         self.connection = connection
         self.version_directory = version_directory
         self.raw_directory = version_directory / SOURCE / "raw"
 
-        if not self.force and source_is_complete(connection, SOURCE, source_version):
+        with self.read_guard():
+            already_complete = source_is_complete(connection, SOURCE, source_version)
+        if not self.force and already_complete:
             print(
                 f"SCMDB {source_version} has already been crawled; "
                 f"leaving {db_path} unchanged."
@@ -155,8 +196,9 @@ class ScmdbWorkflow:
             connection.close()
             return 0
 
-        begin_source_run(connection, SOURCE, source_version, self.raw_directory)
-        connection.commit()
+        with self.write_guard():
+            begin_source_run(connection, SOURCE, source_version, self.raw_directory)
+            connection.commit()
 
         datasets: list[tuple[str, Any]] = []
         try:
@@ -200,18 +242,20 @@ class ScmdbWorkflow:
                 self.save_download(filename, url, content)
                 datasets.append((dataset_name, data))
 
-            with connection:
-                drop_tables(connection, "scmdb")
-                self.create_catalog(connection)
-                for dataset_name, data in datasets:
-                    self.insert_dataset(connection, dataset_name, data)
-                complete_source_run(
-                    connection, SOURCE, self.file_count, self.record_count
-                )
+            with self.write_guard():
+                with connection:
+                    drop_tables(connection, "scmdb")
+                    self.create_catalog(connection)
+                    for dataset_name, data in datasets:
+                        self.insert_dataset(connection, dataset_name, data)
+                    complete_source_run(
+                        connection, SOURCE, self.file_count, self.record_count
+                    )
         except BaseException as error:
-            connection.rollback()
-            fail_source_run(connection, SOURCE, str(error))
-            connection.commit()
+            with self.write_guard():
+                connection.rollback()
+                fail_source_run(connection, SOURCE, str(error))
+                connection.commit()
             raise
         finally:
             connection.close()
@@ -240,9 +284,7 @@ class ScmdbWorkflow:
     ) -> None:
         if isinstance(data, dict):
             for data_type, value in data.items():
-                self.insert_data_type(
-                    connection, dataset_name, str(data_type), value
-                )
+                self.insert_data_type(connection, dataset_name, str(data_type), value)
         else:
             self.insert_data_type(connection, dataset_name, "records", data)
 
@@ -253,9 +295,7 @@ class ScmdbWorkflow:
         data_type: str,
         value: Any,
     ) -> None:
-        table = (
-            f"scmdb_{safe_identifier(dataset_name)}_{safe_identifier(data_type)}"
-        )
+        table = f"scmdb_{safe_identifier(dataset_name)}_{safe_identifier(data_type)}"
         connection.execute(
             f"""
             CREATE TABLE "{table}" (
@@ -292,12 +332,8 @@ class ScmdbWorkflow:
             )
             count += 1
 
-        connection.execute(
-            f'CREATE INDEX "{table}_name_idx" ON "{table}" (name)'
-        )
-        connection.execute(
-            f'CREATE INDEX "{table}_guid_idx" ON "{table}" (guid)'
-        )
+        connection.execute(f'CREATE INDEX "{table}_name_idx" ON "{table}" (name)')
+        connection.execute(f'CREATE INDEX "{table}_guid_idx" ON "{table}" (guid)')
         connection.execute(
             """
             INSERT INTO scmdb_table_catalog (

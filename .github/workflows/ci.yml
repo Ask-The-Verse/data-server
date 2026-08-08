@@ -1,0 +1,100 @@
+name: Data Server CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repository-hygiene:
+    name: repository-hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v7
+      - name: Reject forbidden tracked files
+        run: .github/scripts/check-repository-hygiene.sh
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.9"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: python -m pip install -e ".[dev]"
+      - name: Check lint
+        run: ruff check data_server workflows tests
+      - name: Check formatting
+        run: ruff format --check data_server workflows tests
+
+  compile:
+    name: compile
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.9"
+      - run: python -m compileall -q data_server workflows tests
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.9"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: python -m pip install -e ".[dev]"
+      - name: Run offline tests
+        run: >-
+          pytest
+          --cov=data_server
+          --cov=workflows
+          --cov-report=term-missing
+          --cov-report=xml
+      - uses: actions/upload-artifact@v7
+        with:
+          name: data-server-coverage
+          path: coverage.xml
+
+  dependency-audit:
+    name: dependency-audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.9"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: python -m pip install -e ".[dev]"
+      - name: Audit installed dependencies
+        # These Starlette/Click advisories have no compatible fix under the
+        # supported Python/FastAPI constraints. Every other finding fails CI.
+        run: >-
+          pip-audit .
+          --ignore-vuln PYSEC-2026-161
+          --ignore-vuln PYSEC-2026-249
+          --ignore-vuln PYSEC-2026-248
+          --ignore-vuln PYSEC-2026-2281
+          --ignore-vuln PYSEC-2026-2280
+          --ignore-vuln PYSEC-2026-2132

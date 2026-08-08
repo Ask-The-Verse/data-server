@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ask-the-verse-data-server"
+version = "0.1.0"
+description = "Local FastAPI service for versioned Star Citizen game data"
+requires-python = ">=3.9"
+dependencies = [
+    "fastapi>=0.100,<1",
+    "uvicorn>=0.23,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "httpx>=0.24,<1",
+    "pip-audit>=2.9,<3",
+    "pytest>=7,<9",
+    "pytest-cov>=4,<7",
+    "ruff>=0.12,<1",
+]
+
+[tool.setuptools.packages.find]
+include = ["data_server*", "workflows*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+target-version = "py39"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]

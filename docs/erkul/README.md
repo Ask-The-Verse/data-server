@@ -405,13 +405,13 @@ python3 erkul_fetch.py hammerhead      # 参数=搜索关键字，默认 hammerh
 Run the production crawler from the workspace root:
 
 ```bash
-python3 workflows/erkul_workflow.py
+python3 crawler/workflows/erkul_workflow.py
 ```
 
 It discovers the current game version, skips versions already marked complete,
 downloads and verifies all manifest families, stores the complete lightweight
 ship catalogue plus only the Hammerhead full detail, and writes to the shared
-per-version database under `data/`.
+per-version database under `crawler/data/`.
 
 See [`DATABASE_SCHEMA.md`](./DATABASE_SCHEMA.md) for the output layout, command
 options, and every Erkul table schema.

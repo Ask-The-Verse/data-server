@@ -3,14 +3,14 @@
 Executable crawler workflows and shared runtime code live in this directory.
 
 ```bash
-python3 workflows/erkul_workflow.py
-python3 workflows/scmdb_workflow.py
+python3 crawler/workflows/erkul_workflow.py
+python3 crawler/workflows/scmdb_workflow.py
 ```
 
 Both workflows write to the shared versioned output root:
 
 ```text
-data/<normalized-version>/game_data.sqlite3
+crawler/data/<normalized-version>/game_data.sqlite3
 ```
 
 - `erkul_workflow.py`: Erkul version discovery, downloads, the complete

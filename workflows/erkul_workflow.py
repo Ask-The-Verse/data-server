@@ -8,30 +8,48 @@ import json
 import sqlite3
 import sys
 import zlib
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Optional
-
 
 CRAWLER_ROOT = Path(__file__).resolve().parents[1]
 if str(CRAWLER_ROOT) not in sys.path:
     sys.path.insert(0, str(CRAWLER_ROOT))
 
-from game_data_common import (  # noqa: E402
-    atomic_write,
-    begin_source_run,
-    canonical_json,
-    complete_source_run,
-    connect_database,
-    display_name,
-    drop_tables,
-    fail_source_run,
-    http_get,
-    record_source_file,
-    safe_identifier,
-    sha256_bytes,
-    source_is_complete,
-    version_paths,
-)
+try:
+    from .game_data_common import (
+        atomic_write,
+        begin_source_run,
+        canonical_json,
+        complete_source_run,
+        connect_database,
+        display_name,
+        drop_tables,
+        fail_source_run,
+        http_get,
+        record_source_file,
+        safe_identifier,
+        sha256_bytes,
+        source_is_complete,
+        version_paths,
+    )
+except ImportError:
+    from game_data_common import (  # type: ignore[no-redef]
+        atomic_write,
+        begin_source_run,
+        canonical_json,
+        complete_source_run,
+        connect_database,
+        display_name,
+        drop_tables,
+        fail_source_run,
+        http_get,
+        record_source_file,
+        safe_identifier,
+        sha256_bytes,
+        source_is_complete,
+        version_paths,
+    )
 
 
 BASE_URL = "https://cdn.erkul.games"
@@ -80,17 +98,36 @@ def numeric_value(value: Any, *preferred_keys: str) -> Optional[float]:
 
 
 class ErkulWorkflow:
-    def __init__(self, branch: str, output_root: Path, force: bool, timeout: int):
+    def __init__(
+        self,
+        branch: str,
+        output_root: Path,
+        force: bool,
+        timeout: int,
+        database_lock: Optional[Any] = None,
+    ):
         self.branch = branch.upper()
         self.output_root = output_root
         self.force = force
         self.timeout = timeout
+        self.database_lock = database_lock
         self.file_count = 0
         self.record_count = 0
+        self.source_version: Optional[str] = None
         self.version_directory: Optional[Path] = None
         self.raw_directory: Optional[Path] = None
         self.decoded_directory: Optional[Path] = None
         self.connection: Optional[sqlite3.Connection] = None
+
+    def read_guard(self) -> Any:
+        if self.database_lock is None:
+            return nullcontext()
+        return self.database_lock.read_lock()
+
+    def write_guard(self) -> Any:
+        if self.database_lock is None:
+            return nullcontext()
+        return self.database_lock.write_lock()
 
     def source_url(self, path: str, branch_scoped: bool = True) -> str:
         if branch_scoped:
@@ -126,14 +163,16 @@ class ErkulWorkflow:
             decoded_path,
             json.dumps(decoded, ensure_ascii=False, indent=2).encode("utf-8"),
         )
-        record_source_file(
-            self.connection,
-            SOURCE,
-            self.version_directory,
-            raw_path,
-            url,
-            content,
-        )
+        with self.write_guard():
+            record_source_file(
+                self.connection,
+                SOURCE,
+                self.version_directory,
+                raw_path,
+                url,
+                content,
+            )
+            self.connection.commit()
         self.file_count += 1
         print(f"{action} {url} -> {raw_path}")
 
@@ -179,15 +218,19 @@ class ErkulWorkflow:
         catalog_content = http_get(self.source_url("catalog.bin"), self.timeout)
         manifest = decode_bin(catalog_content)
         source_version = str(manifest["dataVersion"])
+        self.source_version = source_version
         version_directory, db_path = version_paths(self.output_root, source_version)
 
-        connection = connect_database(db_path)
+        with self.write_guard():
+            connection = connect_database(db_path)
         self.connection = connection
         self.version_directory = version_directory
         self.raw_directory = version_directory / SOURCE / "raw"
         self.decoded_directory = version_directory / SOURCE / "decoded"
 
-        if not self.force and source_is_complete(connection, SOURCE, source_version):
+        with self.read_guard():
+            already_complete = source_is_complete(connection, SOURCE, source_version)
+        if not self.force and already_complete:
             print(
                 f"Erkul {source_version} has already been crawled; "
                 f"leaving {db_path} unchanged."
@@ -201,8 +244,9 @@ class ErkulWorkflow:
                 f"Erkul branch {self.branch} is not open: {branch_status!r}"
             )
 
-        begin_source_run(connection, SOURCE, source_version, self.raw_directory)
-        connection.commit()
+        with self.write_guard():
+            begin_source_run(connection, SOURCE, source_version, self.raw_directory)
+            connection.commit()
 
         try:
             self.save_download(
@@ -246,9 +290,7 @@ class ErkulWorkflow:
                 raise RuntimeError(
                     f"No detail path found for Hammerhead {target['className']}"
                 )
-            ship = self.fetch_decoded(
-                blob["path"], expected_sha256=blob.get("sha256")
-            )
+            ship = self.fetch_decoded(blob["path"], expected_sha256=blob.get("sha256"))
 
             family_data: dict[str, list[Any]] = {}
             for family in manifest.get("families", []):
@@ -259,23 +301,25 @@ class ErkulWorkflow:
                     raise TypeError(f"Family {family['kind']} did not decode to a list")
                 family_data[family["kind"]] = values
 
-            with connection:
-                drop_tables(connection, "erkul")
-                self.create_schema(connection, family_data)
-                self.insert_manifest(connection, manifest)
-                self.insert_ship_catalog(
-                    connection, ship_index.get("ships", []), vehicle_blobs
-                )
-                self.insert_ship(connection, target, ship)
-                self.insert_slots(connection, ship.get("slots", []))
-                self.insert_families(connection, family_data)
-                complete_source_run(
-                    connection, SOURCE, self.file_count, self.record_count
-                )
+            with self.write_guard():
+                with connection:
+                    drop_tables(connection, "erkul")
+                    self.create_schema(connection, family_data)
+                    self.insert_manifest(connection, manifest)
+                    self.insert_ship_catalog(
+                        connection, ship_index.get("ships", []), vehicle_blobs
+                    )
+                    self.insert_ship(connection, target, ship)
+                    self.insert_slots(connection, ship.get("slots", []))
+                    self.insert_families(connection, family_data)
+                    complete_source_run(
+                        connection, SOURCE, self.file_count, self.record_count
+                    )
         except BaseException as error:
-            connection.rollback()
-            fail_source_run(connection, SOURCE, str(error))
-            connection.commit()
+            with self.write_guard():
+                connection.rollback()
+                fail_source_run(connection, SOURCE, str(error))
+                connection.commit()
             raise
         finally:
             connection.close()
@@ -479,13 +523,9 @@ class ErkulWorkflow:
                 )
 
             dps = ship.get("dps") if isinstance(ship.get("dps"), dict) else {}
-            flight = (
-                ship.get("flight") if isinstance(ship.get("flight"), dict) else {}
-            )
+            flight = ship.get("flight") if isinstance(ship.get("flight"), dict) else {}
             quantum = (
-                ship.get("quantum")
-                if isinstance(ship.get("quantum"), dict)
-                else {}
+                ship.get("quantum") if isinstance(ship.get("quantum"), dict) else {}
             )
             connection.execute(
                 """
@@ -576,9 +616,7 @@ class ErkulWorkflow:
         )
         self.record_count += 1
 
-    def insert_slots(
-        self, connection: sqlite3.Connection, slots: list[Any]
-    ) -> None:
+    def insert_slots(self, connection: sqlite3.Connection, slots: list[Any]) -> None:
         category_families = {
             "Weapon": "weapon",
             "AssembledWeapon": "weapon",

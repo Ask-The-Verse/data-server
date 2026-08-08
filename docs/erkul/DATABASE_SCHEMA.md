@@ -5,15 +5,15 @@
 The workflow uses only the Python standard library:
 
 ```bash
-python3 workflows/erkul_workflow.py
+python3 crawler/workflows/erkul_workflow.py
 ```
 
 Useful options:
 
 ```bash
-python3 workflows/erkul_workflow.py --branch PTU
-python3 workflows/erkul_workflow.py --force
-python3 workflows/erkul_workflow.py --output-root /path/to/data
+python3 crawler/workflows/erkul_workflow.py --branch PTU
+python3 crawler/workflows/erkul_workflow.py --force
+python3 crawler/workflows/erkul_workflow.py --output-root /path/to/data
 ```
 
 The script checks `catalog.bin` on every invocation. If the current Erkul
@@ -23,7 +23,7 @@ downloading or changing tables. `--force` replaces only the Erkul tables.
 The default output layout is:
 
 ```text
-data/<normalized-version>/
+crawler/data/<normalized-version>/
 ├── game_data.sqlite3
 └── erkul/
     ├── raw/       # original raw-DEFLATE .bin files

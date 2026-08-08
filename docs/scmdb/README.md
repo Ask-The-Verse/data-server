@@ -198,13 +198,13 @@ def normal_cdf(x, mu, sigma):  # Abramowitz-Stegun 26.2.17
 Run the production crawler from the workspace root:
 
 ```bash
-python3 workflows/scmdb_workflow.py
+python3 crawler/workflows/scmdb_workflow.py
 ```
 
 It discovers the newest game version for the requested channel, skips versions
 already marked complete, downloads all required files plus valid optional
 overlays, and writes one table per top-level data type into the shared
-per-version database under `data/`.
+per-version database under `crawler/data/`.
 
 See [`DATABASE_SCHEMA.md`](./DATABASE_SCHEMA.md) for the output layout, command
 options, generated-table contract, and complete table inventory.

@@ -16,8 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-
-USER_AGENT = "AskTheVerse-game-data-crawler/1.0"
+USER_AGENT = "game-data-crawler/1.0"
 IDENTIFIER_RE = re.compile(r"[^a-z0-9]+")
 
 
@@ -198,9 +197,7 @@ def drop_tables(connection: sqlite3.Connection, prefix: str) -> None:
                 f'PRAGMA foreign_key_list("{child}")'
             ).fetchall()
             referenced.update(
-                row[2]
-                for row in foreign_keys
-                if row[2] in pending and row[2] != child
+                row[2] for row in foreign_keys if row[2] in pending and row[2] != child
             )
 
         droppable = pending - referenced
