@@ -1,0 +1,34 @@
+# Generated crawler output
+/data/
+/docs/erkul/data/
+/docs/scmdb/.scmdb_cache/
+
+# Python bytecode and environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Test, coverage, and tool caches
+.coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+
+# Editor and operating-system files
+.DS_Store
+.idea/
+.vscode/
+
+# Runtime logs and temporary SQLite files
+*.log
+*.sqlite3-shm
+*.sqlite3-wal
